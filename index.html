@@ -12,7 +12,7 @@
 <style>
   html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:manipulation}
   body{position:fixed;inset:0;background:#000;font-family:Arial,Helvetica,sans-serif;-webkit-user-select:none;user-select:none}
-  #word{position:absolute;top:max(18px,env(safe-area-inset-top));left:0;width:100%;box-sizing:border-box;padding:0 10px;text-align:center;white-space:nowrap;overflow:hidden;color:#111;font-weight:500;font-size:144px;line-height:1.05;opacity:0;transition:opacity .08s linear}
+  #word{position:absolute;top:max(72px,12vh,env(safe-area-inset-top));left:2vw;width:96vw;box-sizing:border-box;padding:0;text-align:center;white-space:nowrap;overflow:visible;color:#454545;font-weight:650;font-size:190px;line-height:1;letter-spacing:-0.02em;opacity:0;transition:opacity .05s linear;text-rendering:geometricPrecision;-webkit-font-smoothing:antialiased}
   #word.show{opacity:1}
 </style>
 </head>
@@ -31,12 +31,31 @@ let activated = false;
 
 function hideWord(){ wordEl.classList.remove('show'); wordEl.textContent=''; }
 function fitWord(){
-  const max=144, min=28;
-  let s=max; wordEl.style.fontSize=s+'px';
-  const limit=window.innerWidth-20;
-  while(wordEl.scrollWidth>limit && s>min){ s-=2; wordEl.style.fontSize=s+'px'; }
+  if(!wordEl.textContent) return;
+  const vw=Math.max(280, window.innerWidth || document.documentElement.clientWidth || 360);
+  const vh=Math.max(500, window.innerHeight || document.documentElement.clientHeight || 800);
+  const maxSize=Math.min(210, Math.max(120, vh*0.15));
+  const minSize=34;
+  const targetWidth=vw*0.94;
+  let s=maxSize;
+  wordEl.style.fontSize=s+'px';
+  // Measure the real rendered width and scale directly instead of shrinking 2px at a time.
+  const measured=wordEl.scrollWidth;
+  if(measured>targetWidth && measured>0){
+    s=Math.max(minSize, Math.floor(s*(targetWidth/measured)));
+    wordEl.style.fontSize=s+'px';
+  }
+  // Final safety pass for unusual fonts/long words.
+  let guard=0;
+  while(wordEl.scrollWidth>vw*0.96 && s>22 && guard<20){
+    s-=2; guard++; wordEl.style.fontSize=s+'px';
+  }
 }
-function showWord(text){ wordEl.textContent=text; fitWord(); wordEl.classList.add('show'); }
+function showWord(text){
+  wordEl.textContent=text;
+  wordEl.classList.remove('show');
+  requestAnimationFrame(()=>{ fitWord(); requestAnimationFrame(()=>wordEl.classList.add('show')); });
+}
 window.addEventListener('resize',()=>{ if(wordEl.textContent) fitWord(); });
 
 function fullReset(){ state={page:null,line:null,word:null}; hideWord(); }
@@ -226,26 +245,40 @@ function handleTranscript(raw){
   }
 }
 
+let restartTimer=null;
+function scheduleRecognition(delay=260){
+  if(!activated) return;
+  clearTimeout(restartTimer);
+  restartTimer=setTimeout(()=>startRecognition(),delay);
+}
 function makeRecognition(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR) return null;
   const r=new SR();
   r.lang='fr-FR';
-  r.continuous=true;
+  // Android Chrome is generally more reliable with short sessions that auto-restart.
+  r.continuous=false;
   r.interimResults=false;
-  r.maxAlternatives=3;
-  r.onstart=()=>{listening=true;starting=false;};
-  r.onerror=(e)=>{listening=false;starting=false; if(activated && e.error!=='not-allowed' && e.error!=='service-not-allowed') setTimeout(startRecognition,350);};
-  r.onend=()=>{listening=false;starting=false; if(activated) setTimeout(startRecognition,180);};
+  r.maxAlternatives=5;
+  r.onstart=()=>{ if(recognition===r){ listening=true; starting=false; } };
+  r.onerror=(e)=>{
+    if(recognition===r){ listening=false; starting=false; recognition=null; }
+    if(!activated) return;
+    if(e.error==='not-allowed' || e.error==='service-not-allowed') return;
+    scheduleRecognition(e.error==='no-speech' ? 180 : 450);
+  };
+  r.onend=()=>{
+    if(recognition===r){ listening=false; starting=false; recognition=null; }
+    scheduleRecognition(220);
+  };
   r.onresult=(ev)=>{
     for(let i=ev.resultIndex;i<ev.results.length;i++){
       if(!ev.results[i].isFinal) continue;
-      // Try alternatives in order; the first one yielding a meaningful command wins naturally.
       for(let a=0;a<ev.results[i].length;a++){
         const t=ev.results[i][a].transcript;
-        const before=JSON.stringify(state)+wordEl.textContent;
+        const before=JSON.stringify(state)+'|'+wordEl.textContent;
         handleTranscript(t);
-        const after=JSON.stringify(state)+wordEl.textContent;
+        const after=JSON.stringify(state)+'|'+wordEl.textContent;
         if(after!==before) break;
       }
     }
@@ -253,10 +286,18 @@ function makeRecognition(){
   return r;
 }
 function startRecognition(){
-  if(!activated || listening || starting) return;
-  if(!recognition) recognition=makeRecognition();
-  if(!recognition) return;
-  try{starting=true;recognition.start();}catch(e){starting=false;setTimeout(startRecognition,400);}
+  if(!activated || listening || starting || document.visibilityState==='hidden') return;
+  const r=makeRecognition();
+  if(!r) return;
+  recognition=r;
+  try{
+    starting=true;
+    r.start();
+  }catch(e){
+    starting=false;
+    if(recognition===r) recognition=null;
+    scheduleRecognition(500);
+  }
 }
 async function enterImmersiveFullscreen(){
   const el=document.documentElement;
@@ -285,6 +326,8 @@ async function activate(){
 // One initial touch starts full-screen + microphone; after that everything is voice controlled.
 document.addEventListener('pointerdown',activate,{once:true,capture:true});
 document.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
+document.addEventListener('visibilitychange',()=>{ if(activated && document.visibilityState==='visible') scheduleRecognition(120); });
+window.addEventListener('focus',()=>{ if(activated) scheduleRecognition(120); });
 </script>
 </body>
 </html>
