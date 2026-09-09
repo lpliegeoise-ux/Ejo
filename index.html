@@ -273,10 +273,10 @@ async function enterImmersiveFullscreen(){
 }
 async function activate(){
   if(activated) return;
-  // Fullscreen is requested FIRST, inside the user's tap gesture, so Chrome can hide
-  // its address/status bars before microphone activation.
-  await enterImmersiveFullscreen();
+  // Start microphone immediately from the user gesture; fullscreen is best-effort only.
+  // Awaiting fullscreen first can break SpeechRecognition activation on some Android/Chrome builds.
   activated=true;
+  enterImmersiveFullscreen();
   document.documentElement.style.background='#000';
   document.body.style.background='#000';
   try{ if('wakeLock' in navigator) await navigator.wakeLock.request('screen'); }catch(e){}
