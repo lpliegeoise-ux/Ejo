@@ -256,23 +256,27 @@ function makeRecognition(){
   if(!SR) return null;
   const r=new SR();
   r.lang='fr-FR';
-  // Android Chrome is generally more reliable with short sessions that auto-restart.
-  r.continuous=false;
-  r.interimResults=false;
+  // Keep one continuous recognition session running as long as Chrome allows it.
+  // Chrome/Android may still terminate a session after silence or for internal reasons;
+  // in that case we restart only from onend/onerror, never voluntarily after a phrase.
+  r.continuous=true;
+  r.interimResults=true;
   r.maxAlternatives=5;
   r.onstart=()=>{ if(recognition===r){ listening=true; starting=false; } };
   r.onerror=(e)=>{
     if(recognition===r){ listening=false; starting=false; recognition=null; }
     if(!activated) return;
     if(e.error==='not-allowed' || e.error==='service-not-allowed') return;
-    scheduleRecognition(e.error==='no-speech' ? 180 : 450);
+    scheduleRecognition(e.error==='no-speech' ? 700 : 900);
   };
   r.onend=()=>{
     if(recognition===r){ listening=false; starting=false; recognition=null; }
-    scheduleRecognition(220);
+    scheduleRecognition(700);
   };
   r.onresult=(ev)=>{
     for(let i=ev.resultIndex;i<ev.results.length;i++){
+      // Ignore interim hypotheses for commands: they can change while the user is speaking.
+      // Continuous mode keeps the microphone session open; final chunks are processed as they arrive.
       if(!ev.results[i].isFinal) continue;
       for(let a=0;a<ev.results[i].length;a++){
         const t=ev.results[i][a].transcript;
